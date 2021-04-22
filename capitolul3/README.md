@@ -9,8 +9,10 @@
   - [UDP Raw Socket](#udp_raw_socket)
   - [UDP Scapy](#udp_scapy)
 - [TCP Segment](#tcp)
+  - [TCP Congestion Control](#tcp_cong)
   - [TCP Options](#tcp_options)
-  - [TCP Retransmissions](#tcp_retransmission)
+    - [Retransmissions Exercise](#tcp_retransmission)
+    - [Congestion Control Exercise](#tcp_cong_ex)
   - [TCP Socket](#tcp_socket)
   - [TCP Raw Socket](#tcp_raw_socket)
   - [TCP Scapy](#tcp_scapy)
@@ -220,7 +222,7 @@ b'salut'
 
 <a name="#udp_scapy"></a> 
 ### Scapy UDP
-Într-un terminal dintr-un container rulați scapy: `docker-compose exec server scapy`
+Într-un terminal dintr-un container rulați scapy: `docker-compose exec client scapy`
 
 ```python
 udp_obj = UDP()
@@ -239,6 +241,13 @@ pachet = network_layer / udp_obj
 
 send(pachet)
 ```
+
+#### Exercițiu
+Porniți un UDP socket server pe un container iar pe containerul client rulați scapy pentru a trimite un pachet. 
+Încercați același lucru și pe localhost. 
+Captați pachetele pe localhost cu wireshark, ce adrese MAC sunt folosite?
+Pe baza [explicațiilor de aici](https://stackoverflow.com/questions/41166420/sending-a-packet-over-physical-loopback-in-scapy), corectați problema trimiterii pachetelor de pe localhost.
+
 
 
 <a name="tcp"></a> 
@@ -272,21 +281,53 @@ Prima specificație a protocolului TCP a fost în [RFC793](https://tools.ietf.or
 - [Sequence și Acknowledgment](http://www.firewall.cx/networking-topics/protocols/tcp/134-tcp-seq-ack-numbers.html) sunt folosite pentru indicarea secvenței de bytes transmisă și notificarea că acea secvență a fost primită
 - Data offset - dimensiunea header-ului în multipli de 32 de biți
 - Res - 3 biți rezervați
-- NS, CWR, ECE - biți pentru notificarea explicită a existenței congestionării [ECN](http://www.inacon.de/ph/data/TCP/Header_fields/TCP-Header-Field-ECN_OS_RFC-793_3540.htm), explicat mai bine și [aici](http://blog.catchpoint.com/2015/10/30/tcp-flags-cwr-ece/). NS e o sumă binară pentru sigurantă, CWR - indică necesitatea micsorării ferestrei de congestionare iar ECE este un bit de echo care indică prezența congestionarii.
+- NS, CWR, ECE - biți pentru notificarea explicită a existenței congestionării [ECN](https://www.juniper.net/documentation/us/en/software/junos/cos/topics/concept/cos-qfx-series-explicit-congestion-notification-understanding.html), explicat mai bine și [aici](http://blog.catchpoint.com/2015/10/30/tcp-flags-cwr-ece/). NS e o sumă binară pentru sigurantă, CWR - indică necesitatea micsorării ferestrei de congestionare iar ECE este un bit de echo care indică prezența congestionarii.
 - URG, ACK, PSH, RST, SYN, FIN - [flags](http://www.firewall.cx/networking-topics/protocols/tcp/136-tcp-flag-options.html)
 - Window Size - folosit pentru [flow control](http://www.ccs-labs.org/teaching/rn/animations/flow/), exemplu [aici](http://www.inacon.de/ph/data/TCP/Header_fields/TCP-Header-Field-Window-Size_OS_RFC-793.htm)
 - Urgent Pointer - mai multe detalii in [RFC6093](https://tools.ietf.org/html/rfc6093), pe scurt explicat [aici](http://www.firewall.cx/networking-topics/protocols/tcp/137-tcp-window-size-checksum.html).
 - Checksum - suma în complement fată de 1 a bucăților de câte 16 biți, complementatî cu 1, vezi mai multe detalii [aici](https://en.wikipedia.org/wiki/Transmission_Control_Protocol#Checksum_computation) și [RFC1071 aici](https://tools.ietf.org/html/rfc1071)
 Se calculează din concatenarea: unui pseudo-header de IP [adresa IP sursă, IP dest (32 biti fiecare), placeholder (8 biti setati pe 0), [protocol](https://en.wikipedia.org/wiki/List_of_IP_protocol_numbers) (8 biti), și lungimea în bytes a întregii secțiuni TCP sau UDP (16 biti)], TCP sau UDP header cu checksum setat pe 0, și secțiunea de date.
 
-În plus, pe lângă proprietățile din antet, protocolul TCP are o serie de opțiuni (explicate mai jos) și o serie de euristici prin care se încearcă detectarea și evitarea congestionării rețeleleor. Explicațiile pe această temă pot fi urmărite în [capitolul din curs despre congesion control](https://github.com/senisioi/computer-networks/tree/2020/curs#congestion) sau în [notele de curs de aici](https://engineering.purdue.edu/kak/compsec/NewLectures/Lecture16.pdf#page=60). Toate se bazează pe specificațiile din [RFC 2581](https://tools.ietf.org/html/rfc2581) sau [RFC 6582](https://tools.ietf.org/html/rfc6582) din 2012.
+<a name="tcp_cong"></a> 
+### Controlul congestionării
+Pe lângă proprietățile din antet, protocolul TCP are o serie de opțiuni (explicate mai jos) și o serie de euristici prin care se încearcă detectarea și evitarea congestionării rețeleleor.
+
+Explicațiile pe această temă pot fi urmărite și în [capitolul din curs despre congesion control](https://github.com/senisioi/computer-networks/tree/2020/curs#congestion) sau în [notele de curs de aici](https://engineering.purdue.edu/kak/compsec/NewLectures/Lecture16.pdf#page=60). Un exemplu foarte clar este prezentat și [în acest tutorial](https://witestlab.poly.edu/blog/tcp-congestion-control-basics/)
+
+Deși implementările mai noi de TCP pot să difere, principiile după care se ghidează euristicile de control al congestionării sunt aceleași, implementează principiul de creștere aditivă și descreștere multiplicativă și includ:
+
+- [slow start & congestion avoidance](https://tools.ietf.org/html/rfc5681#page-4)
+- [fast retransmit & fast recovery](https://tools.ietf.org/html/rfc5681#page-8)
+
+TCP nu trimite pe rețea mai multe pachete decât variabila internă de congestion window cwnd și variabila din header-ul de la receiver (window) `min(cwnd, rwnd)`. 
+
+
+**Slow start** presupune că începem cu o fereastră inițială în funcție de segmentul maxim. Apoi fereastra crește exponențial până apar pierderi pe rețea: `cwnd += min (N, MSS)`, unde N este numărul de octeți noi confirmați prin ultimul ACK (nu numărul total!). Acest lucru determină o creșterea exponențială a ferestrei de congestionare cwnd care mai este reprezentată ca o dublare. Codul de slow start poate fi verificat în [TCP Reno implementat în linux](https://github.com/torvalds/linux/blob/master/net/ipv4/tcp_cong.c#L383)
+
+
+**Congestion avoidance** apare în momentul în care apar pierderi, se crește fereastra cu o fracțiune de segment `cwnd += MSS*MSS/cwnd` pentru evitarea blocării rețelei. Tot la pasul acesta se setează un prag Slow Start Thresh `ssthresh = max(FlightSize / 2, 2*MSS)`, unde FlightSize e dat de numărul de octeți trimiși și neconfirmați. Acest prag va fi folosit pe viitor pentru a trece din mecanismul de slow start (când pragul este atins) în mecanismul de evitare a congestiei. Implementarea din TCP Reno [este aici](https://github.com/torvalds/linux/blob/master/net/ipv4/tcp_cong.c#L403).
+
+**Fast retransmit** se bazează pe faptul că un receptor trimite un ack duplicat atunci când primește un segment cu sequence number mai mare decât cel așteptat. Astfel, îl notifică pe emițător că a primit un segment out-of-order. Dacă un emițător primește 3 ack duplicate, atunci acesta trimite pachetul cu sequence number pornind de la valoarea acelui acknowledgement fără a mai aștepta după timeout (fast retransmit).
+
+Algoritmul de fast recovery pornește ulterior pentru a crește artificial cwnd. Acesta se bazează pe presupunerea că receptorul totuși recepționează o serie de pachete din moment ce trimite confirmări duplicate iar pachetele pe care le recepționează pot fi cu număr de secvență mai mare. De asemenea după 3 confirmări duplicate, ssthreshold se recalculează ca fiind jumate din cwnd iar congestion window se înjumătățește de asemenea (descreștere multiplicativă) și se trece la congestion avoidance. 
+
+
+Toate se bazează pe specificațiile din [RFC 2581](https://tools.ietf.org/html/rfc2581), [RFC5681](https://tools.ietf.org/html/rfc5681) sau [RFC 6582](https://tools.ietf.org/html/rfc6582) din 2012.
+
+În toate cazurile de mai sus, TCP se bazează pe pierderi de pachete (confirmări duplicate sau timeout) pentru identificarea congestionării. Există și un mecanism de notificare explicită a congestionării care a fost adăugat [relativ recent](http://www.icir.org/floyd/ecn.html) și care nu a fost încă adoptat de toate implementările de TCP. Pentru asta avem flag-urile NS, CWR, ECE dar mai este necesară și implementarea la [nivelul IP](https://en.wikipedia.org/wiki/Explicit_Congestion_Notification#Operation_of_ECN_with_IP) a unui câmp pe care să-l folosească routerele atunci când devin congestionate, iar pentru asta sunt folosiți primii doi biți din ToS. Flag-urile din TCP sunt:
+
+- [ECE (ECN-Echo)](https://tools.ietf.org/html/rfc3168) este folosit de către receptor pentru a-l notifica pe emițător să reducă fluxul de date.
+- CWR (Congestion window reduced) e folosit de către emițător pentru a confirma notificarea ECE primită către receptor și că `cwnd` a scăzut.
+- [NS](https://tools.ietf.org/html/draft-ietf-tsvwg-tcp-nonce-04) o sumă de control pe un bit care se calculează în funcție de sumele anterioare și care încearcă să prevină modificarea accidentală sau intenționată a pachetelor în tranzit.
+
+
 
 <a name="tcp_options"></a> 
 ### Optiuni TCP
 O [listă completă de opțiuni se găsește aici](http://www.networksorcery.com/enp/Protocol/tcp.htm#Options) si [aici](https://www.iana.org/assignments/tcp-parameters/tcp-parameters.xhtml). Optiunile au coduri, dimensiuni si specificatii particulare.
 Probabil cele mai importante sunt prezentate pe scurt în [acest tutorial](http://www.firewall.cx/networking-topics/protocols/tcp/138-tcp-options.html): 
   - [Maximum Segment Size (MSS)](http://fivedots.coe.psu.ac.th/~kre/242-643/L08/html/mgp00005.html) definit [aici](https://tools.ietf.org/html/rfc793#page-18) seteaza dimensiunea maxima a segmentului pentru a se evita fragmetarea la nivelul Network.
-  - [Window Scaling](https://cloudshark.io/articles/tcp-window-scaling-examples/) definit [aici](https://tools.ietf.org/html/rfc7323#page-8) - campul Window poate fi scalat cu valoarea Window * 2^WindowScaleOption
+  - [Window Scaling](https://cloudshark.io/articles/tcp-window-scaling-examples/) definit [aici](https://tools.ietf.org/html/rfc7323#page-8) - campul Window poate fi scalat cu valoarea Window * 2^WindowScaleOption; opțiune permite redimensionarea ferestrei până la (2^16 - 1) * 2^14. În linux si docker puteți dezactiva window scaling prin sysctls `net.ipv4.tcp_window_scaling=0`. 
   - [Selective Acknowledgment](https://packetlife.net/blog/2010/jun/17/tcp-selective-acknowledgments-sack/) 
 definit [aici](https://tools.ietf.org/html/rfc2018#page-3) permite trimiterea unor ack selective in functie de secventa pachetelor pierdute
   - [Timestamps](http://fivedots.coe.psu.ac.th/~kre/242-643/L08/html/mgp00011.html) (pentru round-trip-time) definite [aici](https://tools.ietf.org/html/rfc7323#page-12) inregistreaza timpul de primire a confirmarilor. In felul acesta se verifica daca reteaua este congestionata sau daca fluxul de trimitere trebuie redus.
@@ -296,12 +337,89 @@ definit [aici](https://tools.ietf.org/html/rfc2018#page-3) permite trimiterea un
 
 <a name="tcp_retransmission"></a>
 ### Exercițiu TCP Retransmission
-TCP este un protocol care oferă siguranța transmiterii pachetelor, în cazul în care un stream de octeți este trimis, se așteaptă o confirmare pentru acea secvență de bytes. Dacă confirmarea nu este primită se încearcă retransmiterea. Pentru a observa retransmisiile, putem introduce un delay artificial sau putem ignora anumite pachete pe rețea. Folosim un tool linux numit [netem](https://wiki.linuxfoundation.org/networking/netem) sau mai pe scurt [aici](https://stackoverflow.com/questions/614795/simulate-delayed-and-dropped-packets-on-linux).
+TCP este un protocol care oferă siguranța transmiterii pachetelor, în cazul în care un stream de octeți este trimis, se așteaptă o confirmare pentru acea secvență de bytes. Dacă confirmarea nu este primită se încearcă retransmiterea. Pentru a observa retransmisiile, putem introduce un delay artificial sau putem ignora anumite pachete pe rețea. Folosim un tool linux numit [netem](https://www.cs.unm.edu/~crandall/netsfall13/TCtutorial.pdf), un tutorial este disponibil si [aici](https://www.excentis.com/blog/use-linux-traffic-control-impairment-node-test-environment-part-2).
 
-În containerul router, în [docker-compose.yml](https://github.com/senisioi/computer-networks/blob/2021/capitolul3/docker-compose.yml) este commented comanda pentru [/drop_packages.sh](https://github.com/senisioi/computer-networks/blob/2021/capitolul3/src/drop_packages.sh). Fisierul respectiv este copiat în directorul root `/` in container prin comanda `COPY src/*.sh /` din Dockerfile-lab3. 
-Prin scriptul comentat, routerul poate fi programat să renunțe la pachete cu o probabilitate de 50%: `tc qdisc add dev eth0 root netem loss 50% && tc qdisc add dev eth1 root netem loss 50%`. Puteți folosi această setare dacă doriți să verificați retransmiterea mesajelor în cazul TCP.
+Exemple netem:
+```bash
+# tc qdisc add/change/show/del
+# introduce between 5% and 25% loss on eht0 interface
+tc qdisc add dev eth0 root netem loss 5% 25%
+# package corruption 5% probability on eth1 interface
+tc qdisc add dev eth1 root netem corrupt 5%
+# reorder packages on eth0 interface
+tc qdisc add dev eth0 root netem reorder 25% 50%
+# at a 10ms delay on eth1 interface
+tc qdisc add dev eth1 root netem delay 10ms
+# clean everything
+tc qdisc del dev eth0 root
 
-Porniți TCP Server și TCP Client în containerul server, respectiv client și executați schimburi de mesaje. Cu `tcpdump -Sntv -i any tcp` în containerul router puteți observa retransmiterile segmentelor.
+# to add multiple constraits, make a single command
+tc qdisc add dev eth0 root netem loss 5% 25% corrupt 5% reorder 25% 50% delay 10ms
+```
+
+În containerul router, în [docker-compose.yml](https://github.com/senisioi/computer-networks/blob/2021/capitolul3/docker-compose.yml) exista o `command` care inițializează containerul router și care rulează `sleep infinity`. 
+`router.sh` este copiat în directorul root `/` in container prin comanda `COPY src/*.sh /` din Dockerfile-lab3, deci modificarea lui locală nu afectează fișierul din container.
+
+Introduceți în elocal un shell script `alter_packages.sh` care să execute comenzi de netem pe interfețele eth0 și eth1. Rulați-l în cadrul command după inițializarea routerului, dar înainte de sleep infinity.
+
+Porniți TCP Server și TCP Client în containerul server, respectiv client și executați schimburi de mesaje. Cu `tcpdump -Sntv -i any tcp` sau cu Wireshark observați comportamentul protocolului TCP. Încercați diferite valori în netem.
+
+
+<a name="tcp_cong_ex"></a>
+### A) Exercițiu TCP Congestion Control
+Pentru a observa fast retransmit, puteți executa în contanerul server `/eloca/src/examples/tcp_losses/receiver.py` și în containerul client `/eloca/src/examples/tcp_losses/sender.py`. Captați cu wireshark sau cu `tcpdump -Sntv` pachetele de pe containerul router, veți putea observa schimburile de mesaje. 
+Pentru a observa fast retransmit, setați pe interfața eth1 din containerul router o regulă de reorder și loss `tc qdisc add dev eth1 root netem reorder 80% delay 100ms`
+
+În docker-compose.yml este setată opțiunea de a folosi TCP Reno din sysctls, care folosește exact acest [fișier de linux](https://github.com/torvalds/linux/blob/master/net/ipv4/tcp_cong.c)
+```
+        sysctls:
+          - net.ipv4.tcp_congestion_control=reno
+```
+Adăugați în sysctls următoarea linie care adaugă capabilitatea de Explicit Congestion Notification.
+```
+          - net.ipv4.tcp_ecn=1 
+```
+Ce observați diferit la 3-way handshake?
+
+### B) Plot Congestion Graphs
+Exercițiul se bazează pe [tutorialul prezentat de Fraida Fund](https://witestlab.poly.edu/blog/tcp-congestion-control-basics/) în care sunt extragese informațiile despre cwnd folosind aplicația din linia de comandă ss (socket statistics): `ss -ein dst IP`. Citiți cu atenție tutorialul înainte de a începe rezolvarea și asigurați-vă că aveți aplicațiile `ss` și `ts` în containerul de docker (rulați `docker-compose build`).
+
+Setați pe containerul router limitare de bandă cu netem, astfel încât să aveți un bottleneck de 1 Mbp/s și un buffer de 0.1 MB, în ambele direcții de comunicare:
+```bash
+docker-compose exec router bash -c "/elocal/capitolul3/src/bottleneck.sh"
+```
+
+Rulați pe containerul server o aplicație server iperf3
+```bash
+docker-compose exec server bash -c "iperf3 -s -1"
+```
+
+Rulați pe containerul client script-ul de shell care salvează valorile de timestamp și cwnd într-un csv.
+```bash
+docker-compose exec client bash -c "/elocal/capitolul3/src/capture_stats.sh"
+```
+
+Rulați pe containerul client o aplicație client care să comunice cu serverul timp de 60 de secunde și care să folosească TCP Reno:
+```bash
+docker-compose exec client bash -c "iperf3 -c 198.10.0.2 -t 60 -C reno"
+```
+După finalizarea transmisiunii, încetați execuția comenzii `capture_stats.sh` prin `Ctrl + C`.
+
+
+La final veți putea vedea în directorul `capitolul3/congestion` un fișier `socket_stats.csv` care conține timestamp-ul și cwnd la fiecare transmisie. 
+
+#### B1. Plot cwnd
+Scrieți un script care citește fișierul csv și plotează (vezi matplotlib, seaborn sau pandas) cwnd în raport cu timestamp. Identificați fazele Slow Start, Congestion Avoidance, Fast Retransmit și Fast Recovery. 
+
+#### B2. Plot cwnd pentru alte metode de control
+Încercați și alte metode de congestion control schimbând `-C reno` în [vegas](https://en.wikipedia.org/wiki/TCP_Vegas), [BBR](https://en.wikipedia.org/wiki/TCP_congestion_control#TCP_BBR), [CUBIC](https://www.cs.princeton.edu/courses/archive/fall16/cos561/papers/Cubic08.pdf).
+
+
+### C) Explicit Congestion Notification
+
+Folosind netfilterque, pentru toate pachetele, introduceți în layer-ul de IP informația că rețeaua este congestionată și urmăriți pachetele dintre `receiver.py` și `sender.py`.
+În [Capitolul 6](https://github.com/senisioi/computer-networks/tree/2021/capitolul6#scapy_nfqueue_basic) aveți un exemplu cu NFQUEUE care interceptează pachete și le modifică în tranzit. Încercați să setați flag-urile de explicit congestion notification pe fiecare pachet de la nivelul IP.
+
 
 <a name="#tcp_socket"></a> 
 ### Socket TCP
@@ -516,7 +634,7 @@ tcp.option = [(optiune, valoare)]
 
 <a name="exercitii"></a> 
 ## Exerciții
-1. Instanțiați un server UDP și faceți schimb de mesaje cu un client scapy.
+1. Instanțiați un server UDP și faceți schimb de mesaje cu un client scapy.  (Este necesara schimbarea socket-ului de L3 pentru aplicatii locale ```python conf.L3socket=L3RawSocket```)
 2. Rulați 3-way handshake între server și client folosind containerele definite în capitolul3, astfel: containerul `server` va rula `capitolul2/tcp_server.py` pe adresa '0.0.0.0', iar în containerul `client` configurați și rulați fișierul din [capitolul3/src/examples/tcp_handshake.py](https://github.com/senisioi/computer-networks/blob/2021/capitolul3/src/examples/tcp_handshake.py) pentru a face 3-way handshake.
 3. Configurați opțiunea pentru Maximum Segment Size (MSS) astfel încat să îl notificați pe server că segmentul maxim este de 1 byte. Puteți să-l configurați cu 0?
 4. Trimiteți mesaje TCP folosind flag-ul PSH și scapy.

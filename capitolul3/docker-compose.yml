@@ -1,10 +1,10 @@
-version: '2.1'
+version: '3.8'
 
 services:
     server:
         build:
             context: .
-            dockerfile: docker/Dockerfile-lab3
+            dockerfile: docker/Dockerfile-chap3
         privileged: true
         volumes:
             - ..:/elocal
@@ -18,11 +18,13 @@ services:
               ipv4_address: 198.10.0.2
         depends_on:
             - "router"
-        command: bash -c "/server.sh && sleep infinity"
+        sysctls:
+          - net.ipv4.tcp_congestion_control=reno
+        command: bash -c "/elocal/capitolul3/src/server.sh && sleep infinity"
     middle:
         build:
             context: .
-            dockerfile: docker/Dockerfile-lab3
+            dockerfile: docker/Dockerfile-chap3
         volumes:
             - ..:/elocal
         tty: true
@@ -37,11 +39,12 @@ services:
             - "router"
         sysctls:
           - net.ipv4.ip_forward=1
-        command: bash -c "/middle.sh && sleep infinity"
+          - net.ipv4.tcp_congestion_control=reno
+        command: bash -c "/elocal/capitolul3/src/middle.sh && sleep infinity"
     router:
         build:
             context: .
-            dockerfile: docker/Dockerfile-lab3
+            dockerfile: docker/Dockerfile-chap3
         volumes:
             - ..:/elocal
         tty: true
@@ -56,11 +59,12 @@ services:
               ipv4_address: 198.10.0.1
         sysctls:
           - net.ipv4.ip_forward=1
-        command: bash -c "/router.sh && sleep infinity" # && /alter_packages.sh
+          - net.ipv4.tcp_congestion_control=reno
+        command: bash -c "/elocal/capitolul3/src/router.sh && sleep infinity" # "/elocal/capitolul3/src/alter_packages.sh"
     client:
         build:
             context: .
-            dockerfile: docker/Dockerfile-lab3
+            dockerfile: docker/Dockerfile-chap3
         volumes:
             - ..:/elocal
         tty: true
@@ -74,7 +78,9 @@ services:
         depends_on:
             - "router"
             - "server"
-        command: bash -c "/client.sh && sleep infinity"
+        sysctls:
+          - net.ipv4.tcp_congestion_control=reno
+        command: bash -c "/elocal/capitolul3/src/client.sh && sleep infinity"
 networks:
     subnet1:
         ipam:
